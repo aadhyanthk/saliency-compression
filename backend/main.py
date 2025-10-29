@@ -95,7 +95,7 @@ async def compress_image(file: UploadFile = File(...)):
         hybrid_rgb_img = Image.composite(high_q_img, low_q_img, saliency_mask_img.convert('L'))
         
         final_hybrid_img = hybrid_rgb_img.convert(
-            'P', palette=Image.ADVERTISER, colors=HIGH_QUALITY_PALETTE
+            'P', palette=Image.ADAPTIVE, colors=HIGH_QUALITY_PALETTE # ‼️ --- FIX WAS HERE --- ‼️
         )
 
         # 3. --- Create an In-Memory Zip File ---
