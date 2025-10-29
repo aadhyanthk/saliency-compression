@@ -1,22 +1,49 @@
 import React, { useState } from "react";
 import "./App.css";
+import JSZip from "jszip"; // Import JSZip
 
 // -----------------------------------------------------------------
 // ⬇️ !!! IMPORTANT !!! ⬇️
-// PASTE YOUR RENDER API URL HERE. MUST END WITH A SLASH.
+// Your Render API URL must be correct.
 const API_URL = "https://saliency-compression.onrender.com/compress/";
 // -----------------------------------------------------------------
 
 function App() {
   const [file, setFile] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState(null);
   const [error, setError] = useState(null);
 
-  const handleFileChange = (e) => {
-    setFile(e.target.files[0]);
-    setDownloadUrl(null);
+  // New state for all our image URLs
+  const [originalURL, setOriginalURL] = useState(null);
+  const [saliencyURL, setSaliencyURL] = useState(null);
+  const [highQURL, setHighQURL] = useState(null);
+  const [lowQURL, setLowQURL] = useState(null);
+  const [finalHybridURL, setFinalHybridURL] = useState(null);
+
+  const clearImageStates = () => {
+    // Revoke old URLs to prevent memory leaks
+    if (originalURL) URL.revokeObjectURL(originalURL);
+    if (saliencyURL) URL.revokeObjectURL(saliencyURL);
+    if (highQURL) URL.revokeObjectURL(highQURL);
+    if (lowQURL) URL.revokeObjectURL(lowQURL);
+    if (finalHybridURL) URL.revokeObjectURL(finalHybridURL);
+
+    setOriginalURL(null);
+    setSaliencyURL(null);
+    setHighQURL(null);
+    setLowQURL(null);
+    setFinalHybridURL(null);
     setError(null);
+  };
+
+  const handleFileChange = (e) => {
+    clearImageStates();
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      // Create and set the URL for the original image immediately
+      setOriginalURL(URL.createObjectURL(selectedFile));
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -27,7 +54,11 @@ function App() {
     }
 
     setIsLoading(true);
-    setDownloadUrl(null);
+    // Clear previous results (but not the original)
+    setSaliencyURL(null);
+    setHighQURL(null);
+    setLowQURL(null);
+    setFinalHybridURL(null);
     setError(null);
 
     const formData = new FormData();
@@ -45,9 +76,24 @@ function App() {
         );
       }
 
-      const imageBlob = await response.blob();
-      const url = URL.createObjectURL(imageBlob);
-      setDownloadUrl(url);
+      // 1. Get the response as a zip blob
+      const zipBlob = await response.blob();
+
+      // 2. Load the zip file
+      const zip = await JSZip.loadAsync(zipBlob);
+
+      // 3. Extract each image, create a URL, and set state
+      const saliencyBlob = await zip.file("1_saliency.png").async("blob");
+      setSaliencyURL(URL.createObjectURL(saliencyBlob));
+
+      const highQBlob = await zip.file("2_high_q.png").async("blob");
+      setHighQURL(URL.createObjectURL(highQBlob));
+
+      const lowQBlob = await zip.file("3_low_q.png").async("blob");
+      setLowQURL(URL.createObjectURL(lowQBlob));
+
+      const finalBlob = await zip.file("4_final_hybrid.png").async("blob");
+      setFinalHybridURL(URL.createObjectURL(finalBlob));
     } catch (err) {
       setError(
         err.message ||
@@ -93,18 +139,62 @@ function App() {
         </div>
       )}
 
-      {downloadUrl && (
-        <div className="result">
-          <h3>✅ Compression Complete!</h3>
-          <a
-            href={downloadUrl}
-            download="compressed.png"
-            className="download-button"
-          >
-            Download Compressed Image
-          </a>
-        </div>
-      )}
+      {/* --- This is the new Visual Diagram --- */}
+      <div className="diagram-container">
+        {originalURL && (
+          <div className="diagram-step">
+            <p>1. Original Image</p>
+            <img src={originalURL} alt="Original" />
+          </div>
+        )}
+
+        {saliencyURL && (
+          <>
+            <div className="diagram-arrow">➔</div>
+            <div className="diagram-step">
+              <p>2. Saliency Mask</p>
+              <img src={saliencyURL} alt="Saliency Mask" />
+            </div>
+          </>
+        )}
+
+        {(highQURL || lowQURL) && (
+          <>
+            <div className="diagram-arrow">+</div>
+            <div className="diagram-step-group">
+              {highQURL && (
+                <div className="diagram-step small">
+                  <p>3. High-Q (256 Colors)</p>
+                  <img src={highQURL} alt="High Quality" />
+                </div>
+              )}
+              {lowQURL && (
+                <div className="diagram-step small">
+                  <p>4. Low-Q (16 Colors)</p>
+                  <img src={lowQURL} alt="Low Quality" />
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {finalHybridURL && (
+          <>
+            <div className="diagram-arrow">➔</div>
+            <div className="diagram-step">
+              <p>5. Final Hybrid Image</p>
+              <img src={finalHybridURL} alt="Final Hybrid" />
+              <a
+                href={finalHybridURL}
+                download="compressed.png"
+                className="download-button"
+              >
+                Download Compressed Image
+              </a>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
