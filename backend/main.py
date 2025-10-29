@@ -26,15 +26,40 @@ app.add_middleware(
 # --- 4. Saliency Logic ---
 def get_saliency_mask(pil_image):
     cv_image_rgb = np.array(pil_image)
-    cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB2BGR)
+    cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB_BGR)
+
     saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
     (success, saliency_map) = saliency.computeSaliency(cv_image_bgr)
+    
     saliency_map_8bit = (saliency_map * 255).astype("uint8")
+
+    # --- New Post-Processing Pipeline ---
+    
+    # 1. Apply a small blur to remove high-frequency noise
+    blurred_map = cv2.GaussianBlur(saliency_map_8bit, (5, 5), 0)
+
+    # 2. Use Otsu's thresholding as before to get the initial mask
     _, binary_mask = cv2.threshold(
-        saliency_map_8bit, 0, 255, 
+        blurred_map, 0, 255, 
         cv2.THRESH_BINARY | cv2.THRESH_OTSU
     )
-    return Image.fromarray(binary_mask).convert('L')
+
+    # 3. "Open" the mask: This removes small white noise dots
+    #    It is an erosion followed by a dilation.
+    kernel = np.ones((5, 5), np.uint8)
+    opened_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+
+    # 4. "Close" the mask: This fills small black holes in the subject
+    #    It is a dilation followed by an erosion.
+    closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    # 5. Dilate the final mask slightly to ensure we capture the
+    #    edges of the subject.
+    final_mask = cv2.dilate(closed_mask, kernel, iterations=3)
+    
+    # --- End of New Pipeline ---
+    
+    return Image.fromarray(final_mask).convert('L')
 
 # --- 5. Quantization Logic ---
 def quantize_image(pil_image, palette_size):
