@@ -6,7 +6,6 @@ import zipfile
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
-import math # Added for distance calculation
 
 # --- 1. Parameters ---
 HIGH_QUALITY_PALETTE = 256
@@ -24,123 +23,138 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 4. Saliency Logic (NEW "Center-Biased" PIPELINE) ---
+# --- 4. Saliency Logic (Advanced Multi-Stage Pipeline) ---
 def get_saliency_mask(pil_image):
     try:
         cv_image_rgb = np.array(pil_image)
-        # Ensure 3 channels (remove alpha if present)
         if cv_image_rgb.shape[2] == 4:
             cv_image_rgb = cv_image_rgb[..., :3]
             
-        # ‼️ --- FIX 1: Corrected OpenCV constant --- ‼️
-        # Was cv2.COLOR_RGB_BGR, is now cv2.COLOR_RGB2BGR
         cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB2BGR)
         h, w = cv_image_bgr.shape[:2]
-        img_center_x = w // 2
-        img_center_y = h // 2
 
-        # --- Stage 1: Generate a "Hint" with Spectral Residual ---
-        saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-        (success, saliency_map) = saliency.computeSaliency(cv_image_bgr)
+        # --- Stage 1: Generate Saliency "Hints" ---
         
-        if not success or saliency_map is None:
-            raise Exception("SpectralResidual failed.")
+        # Hint 1: Spectral Residual (finds high-contrast regions)
+        saliency_spectral = cv2.saliency.StaticSaliencySpectralResidual_create()
+        (success_spectral, map_spectral) = saliency_spectral.computeSaliency(cv_image_bgr)
+        if not success_spectral or map_spectral is None:
+            map_spectral = np.zeros((h, w), dtype=np.uint8)
+        else:
+            map_spectral = (map_spectral * 255).astype("uint8")
 
-        saliency_map_8bit = (saliency_map * 255).astype("uint8")
-        _, binary_mask = cv2.threshold(
-            saliency_map_8bit, 0, 255, 
-            cv2.THRESH_BINARY | cv2.THRESH_OTSU
+        # Hint 2: Fine Grained (finds small, detailed regions)
+        saliency_fine = cv2.saliency.StaticSaliencyFineGrained_create()
+        (success_fine, map_fine) = saliency_fine.computeSaliency(cv_image_bgr)
+        if not success_fine or map_fine is None:
+            map_fine = np.zeros((h, w), dtype=np.uint8)
+        else:
+            map_fine = (map_fine * 255).astype("uint8")
+
+        # Combine the hints
+        combined_map = cv2.addWeighted(map_spectral, 0.5, map_fine, 0.5, 0)
+
+        # --- Stage 2: Clean Hints and Create Initial Mask ---
+        
+        # Adaptive thresholding to get the best binary map
+        thresh_map = cv2.adaptiveThreshold(
+            combined_map, 255, 
+            cv2.ADAPTIVE_THRESH_MEAN_C, 
+            cv2.THRESH_BINARY, 
+            11, 2
         )
 
-        # Find ALL contours from the noisy mask
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Morphological opening to remove small noise
+        kernel_small = np.ones((3, 3), np.uint8)
+        thresh_map = cv2.morphologyEx(thresh_map, cv2.MORPH_OPEN, kernel_small, iterations=2)
+
+        # Find all contours in the cleaned-up hint map
+        contours, _ = cv2.findContours(thresh_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         if not contours:
-            raise Exception("No contours found in saliency map.")
+            raise Exception("No contours found in saliency maps.")
 
-        # --- NEW HEURISTIC: Find contour closest to the center ---
+        # --- Stage 3: Filter Contours and Initialize GrabCut ---
         
-        min_distance = float('inf')
-        central_contour = None
+        # Create the mask for GrabCut
+        gc_mask = np.full((h, w), cv2.GC_BGD, dtype=np.uint8) # All definite background
         
+        # Filter contours by size and aspect ratio
+        min_area = (w * h) * 0.01 # At least 1% of the image
+        has_probable_fg = False
+
         for c in contours:
-            # Calculate the centroid (center of mass) of the contour
-            M = cv2.moments(c)
-            # Add 1e-6 to avoid division by zero
-            if M["m00"] > 1e-6:
-                cX = int(M["m10"] / M["m00"])
-                cY = int(M["m01"] / M["m00"])
-            else:
-                continue # Skip contours with no area
+            area = cv2.contourArea(c)
+            if area < min_area:
+                continue
             
-            # Calculate distance from image center to contour center
-            distance = math.sqrt((cX - img_center_x)**2 + (cY - img_center_y)**2)
+            x, y, w_rect, h_rect = cv2.boundingRect(c)
+            aspect_ratio = w_rect / float(h_rect)
             
-            if distance < min_distance:
-                min_distance = distance
-                central_contour = c
+            # Filter out things that are too long or too tall
+            if aspect_ratio > 4.0 or aspect_ratio < 0.25:
+                continue
 
-        if central_contour is None:
-            # Fallback if no valid contours were found
-            central_contour = max(contours, key=cv2.contourArea)
+            # This is a good candidate, mark it as probable foreground
+            cv2.drawContours(gc_mask, [c], -1, cv2.GC_PR_FGD, -1)
+            has_probable_fg = True
 
-        # Get the bounding box of this *central* contour
-        x, y, w_rect, h_rect = cv2.boundingRect(central_contour)
+        # If no contours passed, use the largest one as a last resort
+        if not has_probable_fg and contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w_rect, h_rect = cv2.boundingRect(largest_contour)
+            rect = (max(0, x-10), max(0, y-10), min(w, w_rect+20), min(h, h_rect+20))
+            gc_mask[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2]] = cv2.GC_PR_FGD
         
-        # Create a 10-pixel buffer for the bounding box
-        rect = (
-            max(0, x - 10), 
-            max(0, y - 10), 
-            min(w, w_rect + 20), 
-            min(h, h_rect + 20)
-        )
-        # --- End of New Heuristic ---
+        # Set a 5-pixel border as definite background
+        gc_mask[0:5, :] = cv2.GC_BGD
+        gc_mask[h-5:h, :] = cv2.GC_BGD
+        gc_mask[:, 0:5] = cv2.GC_BGD
+        gc_mask[:, w-5:w] = cv2.GC_BGD
 
-        # --- Stage 2: Refine with GrabCut (using the new rect) ---
-        
-        gc_mask = np.zeros((h, w), np.uint8)
-        gc_mask.fill(cv2.GC_BGD) # Set all to "definite background"
-        
-        # Initialize the mask with our *new* bounding box
-        gc_mask[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2]] = cv2.GC_PR_FGD # Set box to "probable foreground"
+        # --- Stage 4: Run GrabCut ---
         
         bgdModel = np.zeros((1, 65), np.float64)
         fgdModel = np.zeros((1, 65), np.float64)
 
+        # Run GrabCut using the mask we just built
         cv2.grabCut(
             cv_image_bgr,
             gc_mask,
-            rect,
+            None, # We are not using a rect, we use the mask
             bgdModel,
             fgdModel,
-            5,
-            cv2.GC_INIT_WITH_RECT
+            8, # More iterations
+            cv2.GC_INIT_WITH_MASK
         )
 
+        # --- Stage 5: Final Mask Refinement ---
+        
+        # The final mask is where GrabCut marked it as (1) definite FG or (3) probable FG
         final_mask = np.where((gc_mask == 1) | (gc_mask == 3), 255, 0).astype('uint8')
         
-        kernel = np.ones((5, 5), np.uint8)
-        closed_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel, iterations=5)
-        final_mask_dilated = cv2.dilate(closed_mask, kernel, iterations=3)
+        # Final closing and dilation to smooth edges and fill holes
+        kernel_large = np.ones((7, 7), np.uint8)
+        closed_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel_large, iterations=3)
+        final_mask_dilated = cv2.dilate(closed_mask, kernel_large, iterations=2)
 
         return Image.fromarray(final_mask_dilated).convert('L')
 
     except Exception as e:
         print(f"Error in get_saliency_mask: {e}. Falling back to white mask.")
-        
-        # ‼️ --- FIX 2: Corrected fallback dimensions --- ‼️
-        # Was (h, w) = pil_image.size, which is (width, height)
-        # np.full wants (rows, cols), which is (height, width)
         w, h = pil_image.size
-        final_mask = np.full((h, w), 255, dtype=np.uint8)
+        final_mask = np.full((h, w), 255, dtype=np.uint8) # Correct (h, w) order
         return Image.fromarray(final_mask).convert('L')
 
 # --- 5. Quantization Logic ---
 def quantize_image(pil_image, palette_size):
+    """Reduces the image to a specific number of colors."""
     paletted_img = pil_image.convert('P', palette=Image.ADAPTIVE, colors=palette_size)
     return paletted_img.convert('RGB')
 
 # --- 6. Helper Function to Save Image to Buffer ---
 def save_image_to_buffer(pil_img, format="PNG"):
+    """Saves a PIL image to an in-memory BytesIO buffer."""
     buffer = io.BytesIO()
     pil_img.save(buffer, format=format)
     buffer.seek(0)
