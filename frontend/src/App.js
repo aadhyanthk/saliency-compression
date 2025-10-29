@@ -20,6 +20,9 @@ function App() {
   const [lowQURL, setLowQURL] = useState(null);
   const [finalHybridURL, setFinalHybridURL] = useState(null);
 
+  // This will track if a successful result is available
+  const [isResultReady, setIsResultReady] = useState(false);
+
   const clearImageStates = () => {
     // Revoke old URLs to prevent memory leaks
     if (originalURL) URL.revokeObjectURL(originalURL);
@@ -34,6 +37,7 @@ function App() {
     setLowQURL(null);
     setFinalHybridURL(null);
     setError(null);
+    setIsResultReady(false);
   };
 
   const handleFileChange = (e) => {
@@ -60,6 +64,7 @@ function App() {
     setLowQURL(null);
     setFinalHybridURL(null);
     setError(null);
+    setIsResultReady(false);
 
     const formData = new FormData();
     formData.append("file", file);
@@ -94,6 +99,9 @@ function App() {
 
       const finalBlob = await zip.file("4_final_hybrid.png").async("blob");
       setFinalHybridURL(URL.createObjectURL(finalBlob));
+
+      // Set flag to show the diagram
+      setIsResultReady(true);
     } catch (err) {
       setError(
         err.message ||
@@ -139,49 +147,49 @@ function App() {
         </div>
       )}
 
-      {/* --- This is the new Visual Diagram --- */}
-      <div className="diagram-container">
-        {originalURL && (
-          <div className="diagram-step">
-            <p>1. Original Image</p>
-            <img src={originalURL} alt="Original" />
-          </div>
-        )}
+      {/* --- This is the new Visual Diagram Section --- */}
+      {isResultReady && (
+        <section className="diagram-section">
+          <h2>Processing Pipeline</h2>
 
-        {saliencyURL && (
-          <>
-            <div className="diagram-arrow">➔</div>
-            <div className="diagram-step">
+          {/* --- Row 1: Original Image --- */}
+          <div className="diagram-row">
+            <div className="diagram-node">
+              <p>1. Original Image</p>
+              <img src={originalURL} alt="Original" />
+            </div>
+          </div>
+
+          {/* --- Arrow Down --- */}
+          <div className="diagram-connector">↓</div>
+
+          {/* --- Row 2: Saliency + High/Low Q --- */}
+          <div className="diagram-row">
+            <div className="diagram-node">
               <p>2. Saliency Mask</p>
               <img src={saliencyURL} alt="Saliency Mask" />
             </div>
-          </>
-        )}
 
-        {(highQURL || lowQURL) && (
-          <>
-            <div className="diagram-arrow">+</div>
-            <div className="diagram-step-group">
-              {highQURL && (
-                <div className="diagram-step small">
-                  <p>3. High-Q (256 Colors)</p>
-                  <img src={highQURL} alt="High Quality" />
-                </div>
-              )}
-              {lowQURL && (
-                <div className="diagram-step small">
-                  <p>4. Low-Q (16 Colors)</p>
-                  <img src={lowQURL} alt="Low Quality" />
-                </div>
-              )}
+            <div className="diagram-connector-plus">+</div>
+
+            <div className="diagram-node-group">
+              <div className="diagram-node small">
+                <p>3. High-Q (256)</p>
+                <img src={highQURL} alt="High Quality" />
+              </div>
+              <div className="diagram-node small">
+                <p>4. Low-Q (16)</p>
+                <img src={lowQURL} alt="Low Quality" />
+              </div>
             </div>
-          </>
-        )}
+          </div>
 
-        {finalHybridURL && (
-          <>
-            <div className="diagram-arrow">➔</div>
-            <div className="diagram-step">
+          {/* --- Arrow Down --- */}
+          <div className="diagram-connector">↓</div>
+
+          {/* --- Row 3: Final Image & Download --- */}
+          <div className="diagram-row">
+            <div className="diagram-node large">
               <p>5. Final Hybrid Image</p>
               <img src={finalHybridURL} alt="Final Hybrid" />
               <a
@@ -192,9 +200,9 @@ function App() {
                 Download Compressed Image
               </a>
             </div>
-          </>
-        )}
-      </div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

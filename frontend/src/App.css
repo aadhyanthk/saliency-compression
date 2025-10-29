@@ -113,17 +113,84 @@ button:disabled {
   }
 }
 
-.result {
-  margin-top: 1.5rem;
-  padding: 1.5rem;
-  background: #e5f9f7;
-  border: 1px solid #c1e8e3;
-  border-radius: 8px;
+/* --- New Diagram Styles --- */
+
+.diagram-section {
+  margin-top: 2.5rem;
+  border-top: 1px solid #eee;
+  padding-top: 2rem;
 }
 
-.result h3 {
-  margin-top: 0;
+.diagram-section h2 {
   color: #1a535c;
+  margin-top: 0;
+}
+
+.diagram-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+}
+
+.diagram-node {
+  background: #faffff;
+  border: 1px solid #aed9e0;
+  border-radius: 8px;
+  padding: 1rem;
+  flex-grow: 1;
+  flex-basis: 0;
+  min-width: 150px;
+}
+
+.diagram-node p {
+  margin-top: 0;
+  font-weight: 600;
+  color: #333;
+}
+
+.diagram-node img {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background-color: #eee;
+  /* Enforce a consistent height for all images */
+  max-height: 200px;
+  object-fit: contain;
+}
+
+.diagram-node-group {
+  flex-grow: 1;
+  flex-basis: 0;
+  display: flex;
+  gap: 1rem;
+  align-items: baseline; /* ⬅️ This is the new line you must add */
+}
+
+.diagram-node.small {
+  min-width: 100px;
+  padding: 0.75rem;
+}
+
+.diagram-node.small p {
+  font-size: 0.9rem;
+}
+
+.diagram-node.large img {
+  max-height: 300px;
+}
+
+.diagram-connector {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #aed9e0;
+  margin: 1rem 0;
+}
+
+.diagram-connector-plus {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #aed9e0;
 }
 
 .download-button {
@@ -134,7 +201,7 @@ button:disabled {
   text-decoration: none;
   border-radius: 8px;
   font-weight: bold;
-  margin-top: 0.5rem;
+  margin-top: 1rem;
   transition: background-color 0.2s, transform 0.1s;
 }
 
