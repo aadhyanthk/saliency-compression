@@ -23,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 4. Saliency Logic ---
+# --- 4. Saliency Logic (NEW GrabCut PIPELINE) ---
 def get_saliency_mask(pil_image):
     try:
         cv_image_rgb = np.array(pil_image)
@@ -32,41 +32,76 @@ def get_saliency_mask(pil_image):
             cv_image_rgb = cv_image_rgb[..., :3]
             
         cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB2BGR)
+        h, w = cv_image_bgr.shape[:2]
 
+        # --- Stage 1: Generate a "Hint" with Spectral Residual ---
         saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
         (success, saliency_map) = saliency.computeSaliency(cv_image_bgr)
         
-        # --- ‼️ CRITICAL FIX: Check for success ‼️ ---
-        # If saliency fails, create a default white mask
         if not success or saliency_map is None:
-            print("Saliency detection failed, falling back to white mask.")
-            # Create a white mask of the same size as the image
-            h, w, _ = cv_image_rgb.shape
-            final_mask = np.full((h, w), 255, dtype=np.uint8)
-            return Image.fromarray(final_mask).convert('L')
-        # --- End of Fix ---
+            raise Exception("SpectralResidual failed.")
 
         saliency_map_8bit = (saliency_map * 255).astype("uint8")
-
-        # --- Post-Processing Pipeline ---
-        blurred_map = cv2.GaussianBlur(saliency_map_8bit, (5, 5), 0)
-
-        # Use Otsu's thresholding
         _, binary_mask = cv2.threshold(
-            blurred_map, 0, 255, 
+            saliency_map_8bit, 0, 255, 
             cv2.THRESH_BINARY | cv2.THRESH_OTSU
         )
 
-        kernel = np.ones((5, 5), np.uint8)
-        opened_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=2)
-        closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        final_mask = cv2.dilate(closed_mask, kernel, iterations=3)
+        # Find the largest contour from the noisy mask
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            raise Exception("No contours found in saliency map.")
+
+        largest_contour = max(contours, key=cv2.contourArea)
+        # Get the bounding box of this contour
+        x, y, w_rect, h_rect = cv2.boundingRect(largest_contour)
         
-        return Image.fromarray(final_mask).convert('L')
+        # Create a 10-pixel buffer for the bounding box
+        rect = (
+            max(0, x - 10), 
+            max(0, y - 10), 
+            min(w, w_rect + 20), 
+            min(h, h_rect + 20)
+        )
+
+        # --- Stage 2: Refine with GrabCut ---
+        
+        # GrabCut requires a "mask" and temporary arrays
+        gc_mask = np.zeros((h, w), np.uint8)
+        
+        # Initialize the mask with our bounding box as "probable foreground"
+        gc_mask.fill(cv2.GC_BGD) # Set all to "definite background"
+        gc_mask[y:y+h_rect, x:x+w_rect] = cv2.GC_PR_FGD # Set box to "probable foreground"
+        
+        # Allocate memory for GrabCut's internal models
+        bgdModel = np.zeros((1, 65), np.float64)
+        fgdModel = np.zeros((1, 65), np.float64)
+
+        # Run GrabCut segmentation
+        cv2.grabCut(
+            cv_image_bgr,   # The original image
+            gc_mask,        # The hint mask
+            rect,           # The region of interest
+            bgdModel,
+            fgdModel,
+            5,              # 5 iterations
+            cv2.GC_INIT_WITH_RECT
+        )
+
+        # The final mask will contain 0, 1, 2, or 3
+        # We want all "foreground" (1) and "probable foreground" (3)
+        final_mask = np.where((gc_mask == 1) | (gc_mask == 3), 255, 0).astype('uint8')
+        
+        # --- Post-Processing (as before, but on the new mask) ---
+        kernel = np.ones((5, 5), np.uint8)
+        closed_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel, iterations=5)
+        final_mask_dilated = cv2.dilate(closed_mask, kernel, iterations=3)
+
+        return Image.fromarray(final_mask_dilated).convert('L')
 
     except Exception as e:
-        print(f"Error in get_saliency_mask: {e}")
-        # Fallback to white mask on any unexpected error
+        print(f"Error in get_saliency_mask: {e}. Falling back to white mask.")
+        # Fallback to a full white mask if any step fails
         h, w = pil_image.size
         final_mask = np.full((h, w), 255, dtype=np.uint8)
         return Image.fromarray(final_mask).convert('L')
@@ -133,5 +168,4 @@ async def compress_image(file: UploadFile = File(...)):
 @app.get("/")
 def read_root():
     return {"status": "Saliency Compressor API is online."}
-
 
