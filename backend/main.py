@@ -2,7 +2,7 @@ import io
 import cv2
 import numpy as np
 from PIL import Image
-import zipfile  # Import the zipfile module
+import zipfile
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
@@ -25,41 +25,51 @@ app.add_middleware(
 
 # --- 4. Saliency Logic ---
 def get_saliency_mask(pil_image):
-    cv_image_rgb = np.array(pil_image)
-    cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB_BGR)
+    try:
+        cv_image_rgb = np.array(pil_image)
+        # Ensure 3 channels (remove alpha if present)
+        if cv_image_rgb.shape[2] == 4:
+            cv_image_rgb = cv_image_rgb[..., :3]
+            
+        cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB2BGR)
 
-    saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-    (success, saliency_map) = saliency.computeSaliency(cv_image_bgr)
-    
-    saliency_map_8bit = (saliency_map * 255).astype("uint8")
+        saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
+        (success, saliency_map) = saliency.computeSaliency(cv_image_bgr)
+        
+        # --- ‼️ CRITICAL FIX: Check for success ‼️ ---
+        # If saliency fails, create a default white mask
+        if not success or saliency_map is None:
+            print("Saliency detection failed, falling back to white mask.")
+            # Create a white mask of the same size as the image
+            h, w, _ = cv_image_rgb.shape
+            final_mask = np.full((h, w), 255, dtype=np.uint8)
+            return Image.fromarray(final_mask).convert('L')
+        # --- End of Fix ---
 
-    # --- New Post-Processing Pipeline ---
-    
-    # 1. Apply a small blur to remove high-frequency noise
-    blurred_map = cv2.GaussianBlur(saliency_map_8bit, (5, 5), 0)
+        saliency_map_8bit = (saliency_map * 255).astype("uint8")
 
-    # 2. Use Otsu's thresholding as before to get the initial mask
-    _, binary_mask = cv2.threshold(
-        blurred_map, 0, 255, 
-        cv2.THRESH_BINARY | cv2.THRESH_OTSU
-    )
+        # --- Post-Processing Pipeline ---
+        blurred_map = cv2.GaussianBlur(saliency_map_8bit, (5, 5), 0)
 
-    # 3. "Open" the mask: This removes small white noise dots
-    #    It is an erosion followed by a dilation.
-    kernel = np.ones((5, 5), np.uint8)
-    opened_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+        # Use Otsu's thresholding
+        _, binary_mask = cv2.threshold(
+            blurred_map, 0, 255, 
+            cv2.THRESH_BINARY | cv2.THRESH_OTSU
+        )
 
-    # 4. "Close" the mask: This fills small black holes in the subject
-    #    It is a dilation followed by an erosion.
-    closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    
-    # 5. Dilate the final mask slightly to ensure we capture the
-    #    edges of the subject.
-    final_mask = cv2.dilate(closed_mask, kernel, iterations=3)
-    
-    # --- End of New Pipeline ---
-    
-    return Image.fromarray(final_mask).convert('L')
+        kernel = np.ones((5, 5), np.uint8)
+        opened_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+        closed_mask = cv2.morphologyEx(opened_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        final_mask = cv2.dilate(closed_mask, kernel, iterations=3)
+        
+        return Image.fromarray(final_mask).convert('L')
+
+    except Exception as e:
+        print(f"Error in get_saliency_mask: {e}")
+        # Fallback to white mask on any unexpected error
+        h, w = pil_image.size
+        final_mask = np.full((h, w), 255, dtype=np.uint8)
+        return Image.fromarray(final_mask).convert('L')
 
 # --- 5. Quantization Logic ---
 def quantize_image(pil_image, palette_size):
@@ -68,7 +78,6 @@ def quantize_image(pil_image, palette_size):
 
 # --- 6. Helper Function to Save Image to Buffer ---
 def save_image_to_buffer(pil_img, format="PNG"):
-    """Saves a PIL image to an in-memory BytesIO buffer."""
     buffer = io.BytesIO()
     pil_img.save(buffer, format=format)
     buffer.seek(0)
@@ -78,45 +87,48 @@ def save_image_to_buffer(pil_img, format="PNG"):
 @app.post("/compress/")
 async def compress_image(file: UploadFile = File(...)):
     
-    # 1. Read the uploaded image
-    contents = await file.read()
-    original_pil_img = Image.open(io.BytesIO(contents)).convert('RGB')
+    try:
+        # 1. Read the uploaded image
+        contents = await file.read()
+        original_pil_img = Image.open(io.BytesIO(contents)).convert('RGB')
 
-    # 2. --- Generate All 4 Component Images ---
-    
-    # Image 1: Saliency Mask
-    saliency_mask_img = get_saliency_mask(original_pil_img)
-    
-    # Image 2: High-Quality Full Quantization
-    high_q_img = quantize_image(original_pil_img, HIGH_QUALITY_PALETTE)
-    
-    # Image 3: Low-Quality Full Quantization
-    low_q_img = quantize_image(original_pil_img, LOW_QUALITY_PALETTE)
-    
-    # Image 4: Final Hybrid Image
-    hybrid_rgb_img = Image.composite(high_q_img, low_q_img, saliency_mask_img)
-    final_hybrid_img = hybrid_rgb_img.convert(
-        'P', palette=Image.ADAPTIVE, colors=HIGH_QUALITY_PALETTE
-    )
+        # 2. --- Generate All 4 Component Images ---
+        saliency_mask_img = get_saliency_mask(original_pil_img)
+        high_q_img = quantize_image(original_pil_img, HIGH_QUALITY_PALETTE)
+        low_q_img = quantize_image(original_pil_img, LOW_QUALITY_PALETTE)
+        
+        # Ensure mask is 'L' mode for composite
+        hybrid_rgb_img = Image.composite(high_q_img, low_q_img, saliency_mask_img.convert('L'))
+        
+        final_hybrid_img = hybrid_rgb_img.convert(
+            'P', palette=Image.ADAPTIVE, colors=HIGH_QUALITY_PALETTE
+        )
 
-    # 3. --- Create an In-Memory Zip File ---
+        # 3. --- Create an In-Memory Zip File ---
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.writestr("1_saliency.png", save_image_to_buffer(saliency_mask_img).getvalue())
+            zipf.writestr("2_high_q.png", save_image_to_buffer(high_q_img).getvalue())
+            zipf.writestr("3_low_q.png", save_image_to_buffer(low_q_img).getvalue())
+            zipf.writestr("4.final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
+
+        zip_buffer.seek(0)
+
+        # 4. Send the zip file back
+        return StreamingResponse(
+            zip_buffer, 
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename=compression_package.zip"}
+        )
     
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        # Add all 4 images to the zip
-        zipf.writestr("1_saliency.png", save_image_to_buffer(saliency_mask_img).getvalue())
-        zipf.writestr("2_high_q.png", save_image_to_buffer(high_q_img).getvalue())
-        zipf.writestr("3_low_q.png", save_image_to_buffer(low_q_img).getvalue())
-        zipf.writestr("4_final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
-
-    zip_buffer.seek(0)
-
-    # 4. Send the zip file back
-    return StreamingResponse(
-        zip_buffer, 
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=compression_package.zip"}
-    )
+    except Exception as e:
+        print(f"Error in /compress/ endpoint: {e}")
+        # Return a 500 error explicitly if something fails
+        return StreamingResponse(
+            io.BytesIO(b"Server processing error."), 
+            status_code=500,
+            media_type="text/plain"
+        )
 
 @app.get("/")
 def read_root():
