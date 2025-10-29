@@ -171,7 +171,7 @@ async def compress_image(file: UploadFile = File(...)):
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.writestr("1_saliency.png", save_image_to_buffer(saliency_mask_img).getvalue())
-            zipf.writestr("2_high_q.png", save_iage_to_buffer(high_q_img).getvalue())
+            zipf.writestr("2_high_q.png", save_image_to_buffer(high_q_img).getvalue())
             zipf.writestr("3_low_q.png", save_image_to_buffer(low_q_img).getvalue())
             zipf.writestr("4_final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
 
