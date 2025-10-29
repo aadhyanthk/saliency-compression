@@ -1,0 +1,21 @@
+#Python / Backend
+
+pycache/
+*.pyc
+.venv/
+venv/
+pip-wheel-metadata/
+
+#Node / Frontend
+
+node_modules/
+build/
+.npm/
+npm-debug.log*
+
+#OS / Editor
+
+.DS_Store
+*.swp
+*.swo
+.vscode/
