@@ -32,7 +32,9 @@ def get_saliency_mask(pil_image):
         if cv_image_rgb.shape[2] == 4:
             cv_image_rgb = cv_image_rgb[..., :3]
             
-        cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB_BGR)
+        # ‼️ --- FIX 1: Corrected OpenCV constant --- ‼️
+        # Was cv2.COLOR_RGB_BGR, is now cv2.COLOR_RGB2BGR
+        cv_image_bgr = cv2.cvtColor(cv_image_rgb, cv2.COLOR_RGB2BGR)
         h, w = cv_image_bgr.shape[:2]
         img_center_x = w // 2
         img_center_y = h // 2
@@ -124,7 +126,11 @@ def get_saliency_mask(pil_image):
 
     except Exception as e:
         print(f"Error in get_saliency_mask: {e}. Falling back to white mask.")
-        h, w = pil_image.size
+        
+        # ‼️ --- FIX 2: Corrected fallback dimensions --- ‼️
+        # Was (h, w) = pil_image.size, which is (width, height)
+        # np.full wants (rows, cols), which is (height, width)
+        w, h = pil_image.size
         final_mask = np.full((h, w), 255, dtype=np.uint8)
         return Image.fromarray(final_mask).convert('L')
 
@@ -165,7 +171,7 @@ async def compress_image(file: UploadFile = File(...)):
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.writestr("1_saliency.png", save_image_to_buffer(saliency_mask_img).getvalue())
-            zipf.writestr("2_high_q.png", save_image_to_buffer(high_q_img).getvalue())
+            zipf.writestr("2_high_q.png", save_iage_to_buffer(high_q_img).getvalue())
             zipf.writestr("3_low_q.png", save_image_to_buffer(low_q_img).getvalue())
             zipf.writestr("4_final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
 
