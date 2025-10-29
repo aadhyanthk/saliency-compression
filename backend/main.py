@@ -110,7 +110,7 @@ async def compress_image(file: UploadFile = File(...)):
             zipf.writestr("1_saliency.png", save_image_to_buffer(saliency_mask_img).getvalue())
             zipf.writestr("2_high_q.png", save_image_to_buffer(high_q_img).getvalue())
             zipf.writestr("3_low_q.png", save_image_to_buffer(low_q_img).getvalue())
-            zipf.writestr("4.final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
+            zipf.writestr("4_final_hybrid.png", save_image_to_buffer(final_hybrid_img).getvalue())
 
         zip_buffer.seek(0)
 
@@ -133,4 +133,5 @@ async def compress_image(file: UploadFile = File(...)):
 @app.get("/")
 def read_root():
     return {"status": "Saliency Compressor API is online."}
+
 
